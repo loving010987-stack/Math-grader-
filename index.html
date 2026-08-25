@@ -1,5 +1,3 @@
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg:#F5F7FA; --paper:#FFFFFF; --ink:#233044; --sub:#6B7690; --line:#E2E6EE;
@@ -104,8 +102,9 @@
   let mode = 'student'; // student | pin | teacher
 
   // student flow
-  let studentStep = 'pick-worksheet'; // pick-worksheet | quiz | confirm | result
+  let studentStep = 'pick-grade'; // pick-grade | pick-worksheet | quiz | confirm | result
   let allWorksheets = [];
+  let studentPickedGrade = '';
   let pickedWorksheet = null;
   let studentAnswers = {};
   let lastResult = null;
@@ -140,18 +139,18 @@
   function genId(prefix){ return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
   // ---------- BACKEND (Google Apps Script) ----------
-  const API_URL = 'https://script.google.com/macros/s/AKfycbyLOK5opWpajFVgHLUVcMFjFdeWzPatMUrmkAns3a8YSxhXq9ACMrc8lx2oRbRXIbt7pA/exec';
+  const API_URL = 'https://script.google.com/macros/s/AKfycbzRlWrnXKW8m8tXxVLVSrtu2xIsanYDfkvW8YL-faJQ9CzX2p9X9le6eS0_SV2xCGgb/exec';
 
   async function apiGet(params){
     try{
-      const qs = new URLSearchParams(params).toString();
-      const res = await fetch(API_URL + '?' + qs);
+      const qs = new URLSearchParams({...params, _ts: Date.now()+'_'+Math.random().toString(36).slice(2)}).toString();
+      const res = await fetch(API_URL + '?' + qs, { cache: 'no-store' });
       return await res.json();
     }catch(e){ console.error(e); toast('서버 연결 오류(GET): ' + e.message); return null; }
   }
   async function apiPost(body){
     try{
-      const res = await fetch(API_URL, { method:'POST', body: JSON.stringify(body) });
+      const res = await fetch(API_URL, { method:'POST', body: JSON.stringify(body), cache: 'no-store' });
       return await res.json();
     }catch(e){ console.error(e); toast('서버 연결 오류(POST): ' + e.message); return null; }
   }
@@ -178,12 +177,21 @@
         if(!q.answers) q.answers=[];
         if(typeof q.multi!=='boolean') q.multi = q.answers.length>1;
       });
-      if(!ws.grade) ws.grade = GRADES[0];
+      // 학년 정보는 제목 안에 "학년|실제제목" 형태로 저장/추출 (백엔드 변경 없이 동작)
+      const rawTitle = ws.title || '';
+      const sep = rawTitle.indexOf('|');
+      if(sep>0 && GRADES.includes(rawTitle.slice(0,sep))){
+        ws.grade = rawTitle.slice(0,sep);
+        ws.title = rawTitle.slice(sep+1);
+      }else{
+        ws.grade = GRADES[0];
+      }
     });
     return arr;
   }
   async function saveOneWorksheet(worksheet){
-    const res = await apiPost({ action:'saveWorksheet', teacherId:TID, worksheet });
+    const payload = { ...worksheet, title: (worksheet.grade||GRADES[0]) + '|' + worksheet.title };
+    const res = await apiPost({ action:'saveWorksheet', teacherId:TID, worksheet: payload });
     return !!(res && res.ok);
   }
   async function deleteOneWorksheet(worksheetId){
@@ -222,7 +230,7 @@
     if(mode==='teacher' && loggedIn){
       badgeEl.innerHTML = '<a id="mg-logout">로그아웃</a>';
       const lo = document.getElementById('mg-logout');
-      if(lo) lo.addEventListener('click', ()=>{ loggedIn=false; mode='student'; studentStep='pick-worksheet'; render(); });
+      if(lo) lo.addEventListener('click', ()=>{ loggedIn=false; mode='student'; studentStep='pick-grade'; render(); });
     }else{
       badgeEl.innerHTML = '';
     }
@@ -232,22 +240,32 @@
   async function renderStudent(){
     updateBadge();
 
-    if(studentStep==='pick-worksheet'){
+    if(studentStep==='pick-grade'){
       allWorksheets = await loadWorksheets();
       if(allWorksheets.length===0){
         root.innerHTML = '<div class="mg-card"><div class="mg-empty">아직 등록된 학습지가 없어요.<br>하단의 설정에서 먼저 학습지를 만들어주세요.</div></div>' + footerLinkHTML();
         bindFooterLink();
         return;
       }
-      const grouped = GRADES.map(g=>({
-        grade:g,
-        list: allWorksheets.filter(w=>w.grade===g)
-      })).filter(g=>g.list.length>0);
-      const groupsHtml = grouped.map(g=>{
-        const btns = g.list.map(ws=>`<button class="mg-list-btn" data-id="${ws.id}">${ws.title} <span class="arrow">›</span></button>`).join('');
-        return `<h4>${g.grade}</h4>${btns}`;
-      }).join('');
-      root.innerHTML = `<div class="mg-card"><h3>학습지를 선택하세요</h3>${groupsHtml}</div>` + footerLinkHTML();
+      const availableGrades = GRADES.filter(g=>allWorksheets.some(w=>w.grade===g));
+      const btns = availableGrades.map(g=>`<button class="mg-list-btn" data-grade="${g}">${g} <span class="arrow">›</span></button>`).join('');
+      root.innerHTML = `<div class="mg-card"><h3>학년을 선택하세요</h3>${btns}</div>` + footerLinkHTML();
+      root.querySelectorAll('[data-grade]').forEach(btn=>{
+        btn.addEventListener('click', ()=>{
+          studentPickedGrade = btn.dataset.grade;
+          studentStep='pick-worksheet';
+          renderStudent();
+        });
+      });
+      bindFooterLink();
+      return;
+    }
+
+    if(studentStep==='pick-worksheet'){
+      const list = allWorksheets.filter(w=>w.grade===studentPickedGrade);
+      const btns = list.map(ws=>`<button class="mg-list-btn" data-id="${ws.id}">${ws.title} <span class="arrow">›</span></button>`).join('');
+      root.innerHTML = `<div class="mg-card"><h3>${studentPickedGrade} 학습지를 선택하세요</h3>${btns || '<div class="mg-empty">이 학년에 등록된 학습지가 없어요.</div>'}</div>` +
+        '<button class="mg-btn secondary" id="mg-back-grade">다른 학년 선택</button>';
       root.querySelectorAll('.mg-list-btn').forEach(btn=>{
         btn.addEventListener('click', ()=>{
           pickedWorksheet = allWorksheets.find(w=>w.id===btn.dataset.id);
@@ -257,7 +275,7 @@
           renderStudent();
         });
       });
-      bindFooterLink();
+      document.getElementById('mg-back-grade').addEventListener('click', ()=>{ studentStep='pick-grade'; renderStudent(); });
       return;
     }
 
@@ -436,7 +454,7 @@
     `;
     const pinEl = document.getElementById('mg-login-pin');
     pinEl.addEventListener('input', e=>{ loginPin = e.target.value.replace(/[^0-9]/g,'').slice(0,4); e.target.value = loginPin; });
-    document.getElementById('mg-login-cancel').addEventListener('click', ()=>{ mode='student'; studentStep='pick-worksheet'; render(); });
+    document.getElementById('mg-login-cancel').addEventListener('click', ()=>{ mode='student'; studentStep='pick-grade'; render(); });
     document.getElementById('mg-forgot-toggle').addEventListener('click', ()=>{
       showResetForm = !showResetForm; resetCode=''; resetNewPin='';
       renderPin();
@@ -617,8 +635,25 @@
     document.getElementById('mg-t-cancel').addEventListener('click', ()=>{ teacherTab='list'; renderTeacher(); });
   }
 
-  function xlsxDownload(sheets, filename){
-    if(typeof XLSX === 'undefined'){ toast('엑셀 라이브러리를 불러오지 못했어요'); return; }
+  let xlsxLoadPromise = null;
+  function loadXlsxLib(){
+    if(typeof XLSX !== 'undefined') return Promise.resolve(true);
+    if(xlsxLoadPromise) return xlsxLoadPromise;
+    xlsxLoadPromise = new Promise((resolve)=>{
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.onload = ()=>resolve(true);
+      s.onerror = ()=>resolve(false);
+      setTimeout(()=>resolve(false), 8000); // 8초 안에 안 되면 포기
+      document.head.appendChild(s);
+    });
+    return xlsxLoadPromise;
+  }
+
+  async function xlsxDownload(sheets, filename){
+    toast('엑셀 준비 중...');
+    const ok = await loadXlsxLib();
+    if(!ok || typeof XLSX === 'undefined'){ toast('엑셀 기능을 불러오지 못했어요 (네트워크 문제일 수 있어요)'); return; }
     const wb = XLSX.utils.book_new();
     sheets.forEach(s=>{ const ws = XLSX.utils.json_to_sheet(s.rows); XLSX.utils.book_append_sheet(wb, ws, s.name.slice(0,31)); });
     XLSX.writeFile(wb, filename);
