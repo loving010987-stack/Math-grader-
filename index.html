@@ -114,6 +114,9 @@
   // login
   let loginName = '';
   let loginPin = '';
+  let showResetForm = false;
+  let resetCode = '';
+  let resetNewPin = '';
 
   // teacher session
   let currentTeacher = null; // {id,name}
@@ -159,6 +162,10 @@
   }
   async function createTeacher(id, name, pin){
     const res = await apiPost({ action:'saveTeacher', id, name, pin });
+    return !!(res && res.ok);
+  }
+  async function resetTeacherPinApi(id, newPin){
+    const res = await apiPost({ action:'resetTeacherPin', id, newPin });
     return !!(res && res.ok);
   }
   async function loadWorksheets(teacherId){
@@ -421,6 +428,19 @@
   // ================= LOGIN =================
   function renderPin(){
     updateBadge();
+    const resetBlock = showResetForm ? `
+      <div class="mg-note" style="margin:14px 0 8px; font-weight:700; color:var(--ink);">PIN 초기화</div>
+      <div class="mg-note" style="margin-bottom:8px;">위에 입력한 이름의 PIN을 초기화합니다. 초기화 코드가 필요해요.</div>
+      <div class="mg-field">
+        <label>초기화 코드</label>
+        <input type="password" id="mg-reset-code" placeholder="초기화 코드" value="${resetCode}">
+      </div>
+      <div class="mg-field">
+        <label>새 PIN (숫자 4자리)</label>
+        <input type="password" id="mg-reset-newpin" placeholder="새 PIN 4자리" inputmode="numeric" maxlength="4" value="${resetNewPin}">
+      </div>
+      <button class="mg-btn secondary" id="mg-reset-go">초기화하고 로그인</button>
+    ` : '';
     root.innerHTML = `
       <div class="mg-pin-wrap">
         <div class="mg-card">
@@ -436,6 +456,8 @@
           </div>
           <button class="mg-btn" id="mg-login-go">로그인 / 계정 만들기</button>
           <button class="mg-btn secondary" id="mg-login-cancel" style="margin-top:8px;">취소</button>
+          <div class="mg-footer-link" style="margin-top:14px;"><a id="mg-forgot-toggle">${showResetForm ? '초기화 취소' : 'PIN을 잊으셨나요?'}</a></div>
+          ${resetBlock}
         </div>
       </div>
     `;
@@ -444,6 +466,10 @@
     nameEl.addEventListener('input', e=>{ loginName = e.target.value; });
     pinEl.addEventListener('input', e=>{ loginPin = e.target.value.replace(/[^0-9]/g,'').slice(0,4); e.target.value = loginPin; });
     document.getElementById('mg-login-cancel').addEventListener('click', ()=>{ mode='student'; studentStep='pick-teacher'; render(); });
+    document.getElementById('mg-forgot-toggle').addEventListener('click', ()=>{
+      showResetForm = !showResetForm; resetCode=''; resetNewPin='';
+      renderPin();
+    });
     document.getElementById('mg-login-go').addEventListener('click', async ()=>{
       const name = loginName.trim();
       if(!name){ toast('이름을 입력해주세요'); return; }
@@ -466,6 +492,31 @@
       mode='teacher';
       render();
     });
+    const resetCodeEl = document.getElementById('mg-reset-code');
+    const resetPinEl = document.getElementById('mg-reset-newpin');
+    if(resetCodeEl){
+      resetCodeEl.addEventListener('input', e=>{ resetCode = e.target.value; });
+      resetPinEl.addEventListener('input', e=>{ resetNewPin = e.target.value.replace(/[^0-9]/g,'').slice(0,4); e.target.value = resetNewPin; });
+      document.getElementById('mg-reset-go').addEventListener('click', async ()=>{
+        const name = loginName.trim();
+        if(!name){ toast('위에 이름을 먼저 입력해주세요'); return; }
+        if(resetCode !== '1983'){ toast('초기화 코드가 올바르지 않아요'); return; }
+        if(resetNewPin.length!==4){ toast('새 PIN 4자리를 입력해주세요'); return; }
+        await loadTeachers();
+        const found = Object.entries(teachersMap).find(([id,t])=>t.name===name);
+        if(!found){ toast('그 이름의 계정을 찾을 수 없어요'); return; }
+        const [id] = found;
+        const ok = await resetTeacherPinApi(id, resetNewPin);
+        if(!ok){ toast('초기화에 실패했어요'); return; }
+        toast('PIN이 초기화됐어요');
+        currentTeacher = {id, name};
+        showResetForm = false; resetCode=''; resetNewPin='';
+        teacherWorksheets = await loadWorksheets(currentTeacher.id);
+        teacherTab='list';
+        mode='teacher';
+        render();
+      });
+    }
   }
 
   // ================= TEACHER =================
