@@ -35,6 +35,8 @@
   .mg-choice-btn:active{ transform:scale(0.94); }
   .mg-count-badge{ font-size:12px; font-weight:800; color:var(--red-pen); flex-shrink:0; margin-left:6px; }
   .mg-count-badge.done{ color:var(--green-ok); }
+  .mg-pick-btn{ padding:9px 16px; border-radius:9px; border:1.5px solid var(--line); background:#FAFBFD; font-weight:700; font-size:14px; cursor:pointer; color:var(--ink); transition:all .12s ease; }
+  .mg-pick-btn.selected{ background:var(--chalk-blue); border-color:var(--chalk-blue); color:#fff; }
   .mg-list-btn{ display:flex; align-items:center; justify-content:space-between; width:100%; text-align:left; padding:14px 16px; border-radius:12px; border:1.5px solid var(--line); background:#FAFBFD; font-weight:700; font-size:15px; color:var(--ink); cursor:pointer; margin-bottom:10px; }
   .mg-list-btn:hover{ border-color:var(--chalk-blue); }
   .mg-list-btn .arrow{ color:var(--sub); font-weight:400; }
@@ -103,6 +105,11 @@
   let pickedWorksheet = null;
   let studentAnswers = {};
   let lastResult = null;
+  let selectedGrade = '';
+  let selectedClassroom = '';
+  let pendingName = '', pendingGrade = '', pendingClassroom = '';
+  const GRADES = ['3학년','4학년','5학년','6학년'];
+  const CLASSROOMS = ['국화','난초','매화','전담'];
 
   // login
   let loginName = '';
@@ -129,64 +136,68 @@
   }
   function genId(prefix){ return prefix + Date.now().toString(36) + Math.random().toString(36).slice(2,7); }
 
-  // ---------- STORAGE ----------
-  async function loadTeachers(){
-    try{ const res = await window.storage.get('teachers', true); teachersMap = res ? JSON.parse(res.value) : {}; }
-    catch(e){ teachersMap = {}; }
+  // ---------- BACKEND (Google Apps Script) ----------
+  const API_URL = 'https://script.google.com/macros/s/AKfycbyLOK5opWpajFVgHLUVcMFjFdeWzPatMUrmkAns3a8YSxhXq9ACMrc8lx2oRbRXIbt7pA/exec';
+
+  async function apiGet(params){
+    try{
+      const qs = new URLSearchParams(params).toString();
+      const res = await fetch(API_URL + '?' + qs);
+      return await res.json();
+    }catch(e){ console.error(e); return null; }
   }
-  async function saveTeachers(){
-    try{ await window.storage.set('teachers', JSON.stringify(teachersMap), true); return true; }
-    catch(e){ return false; }
+  async function apiPost(body){
+    try{
+      const res = await fetch(API_URL, { method:'POST', body: JSON.stringify(body) });
+      return await res.json();
+    }catch(e){ console.error(e); return null; }
+  }
+
+  async function loadTeachers(){
+    const res = await apiGet({ action:'teachers' });
+    teachersMap = res || {};
+  }
+  async function createTeacher(id, name, pin){
+    const res = await apiPost({ action:'saveTeacher', id, name, pin });
+    return !!(res && res.ok);
   }
   async function loadWorksheets(teacherId){
-    try{
-      const res = await window.storage.get('ws:'+teacherId, true);
-      const arr = res ? JSON.parse(res.value) : [];
-      arr.forEach(ws=>{
-        ws.questions.forEach(q=>{
-          if(typeof q.answer==='number' && !q.answers) q.answers=[q.answer];
-          if(!q.answers) q.answers=[];
-          if(typeof q.multi!=='boolean') q.multi = q.answers.length>1;
-        });
+    const res = await apiGet({ action:'worksheets', teacherId });
+    const arr = res || [];
+    arr.forEach(ws=>{
+      ws.questions.forEach(q=>{
+        if(typeof q.answer==='number' && !q.answers) q.answers=[q.answer];
+        if(!q.answers) q.answers=[];
+        if(typeof q.multi!=='boolean') q.multi = q.answers.length>1;
       });
-      return arr;
-    }catch(e){ return []; }
+    });
+    return arr;
   }
-  async function saveWorksheetsArr(teacherId, arr){
-    try{ await window.storage.set('ws:'+teacherId, JSON.stringify(arr), true); return true; }
-    catch(e){ return false; }
+  async function saveOneWorksheet(teacherId, worksheet){
+    const res = await apiPost({ action:'saveWorksheet', teacherId, worksheet });
+    return !!(res && res.ok);
+  }
+  async function deleteOneWorksheet(worksheetId){
+    const res = await apiPost({ action:'deleteWorksheet', worksheetId });
+    return !!(res && res.ok);
   }
   async function submitResult(teacherId, worksheetId, result){
-    const key = 'result:'+teacherId+':'+worksheetId+':'+genId('');
-    try{ await window.storage.set(key, JSON.stringify(result), true); return true; }
-    catch(e){ return false; }
+    const res = await apiPost({ action:'submitResult', teacherId, worksheetId, result });
+    return !!(res && res.ok);
   }
   async function loadResults(teacherId, worksheetId){
-    try{
-      const prefix = 'result:'+teacherId+':'+worksheetId+':';
-      const listRes = await window.storage.list(prefix, true);
-      const keys = (listRes && listRes.keys) || [];
-      const out = [];
-      for(const k of keys){
-        try{ const r = await window.storage.get(k, true); if(r) out.push({key:k, data:JSON.parse(r.value)}); }
-        catch(e){}
-      }
-      out.sort((a,b)=>(b.data.timestamp||0)-(a.data.timestamp||0));
-      return out;
-    }catch(e){ return []; }
+    const res = await apiGet({ action:'results', teacherId, worksheetId });
+    const out = (res || []).map(r=>({ key:r.key, data:{ name:r.name, grade:r.grade, classroom:r.classroom, timestamp:r.timestamp, answers:r.answers, total:r.total, correctCount:r.correctCount } }));
+    out.sort((a,b)=>(b.data.timestamp||0)-(a.data.timestamp||0));
+    return out;
   }
   async function deleteAllResults(teacherId, worksheetId){
-    try{
-      const prefix = 'result:'+teacherId+':'+worksheetId+':';
-      const listRes = await window.storage.list(prefix, true);
-      const keys = (listRes && listRes.keys) || [];
-      for(const k of keys) await window.storage.delete(k, true);
-      return true;
-    }catch(e){ return false; }
+    const res = await apiPost({ action:'deleteAllResults', teacherId, worksheetId });
+    return !!(res && res.ok);
   }
   async function deleteOneResult(key){
-    try{ await window.storage.delete(key, true); return true; }
-    catch(e){ return false; }
+    const res = await apiPost({ action:'deleteResult', key });
+    return !!(res && res.ok);
   }
 
   function markSVG(correct){
@@ -248,6 +259,7 @@
         btn.addEventListener('click', ()=>{
           pickedWorksheet = studentWorksheets.find(w=>w.id===btn.dataset.id);
           studentAnswers = {};
+          selectedGrade = ''; selectedClassroom = ''; window.__mgTmpName = '';
           studentStep='quiz';
           renderStudent();
         });
@@ -266,6 +278,7 @@
         <div class="mg-card">
           <h3>제출 전 마지막 확인</h3>
           <div class="mg-warn">제출하면 바로 채점되고 다시 제출할 수 없어요. 고른 답이 맞는지 꼭 확인하세요!</div>
+          <div class="mg-stat-row"><div class="mg-stat-name">${pendingGrade} ${pendingClassroom}반</div><div class="mg-stat-score">${pendingName}</div></div>
           <div>${rows}</div>
         </div>
         <button class="mg-btn" id="mg-final-submit">최종 제출하기</button>
@@ -273,12 +286,11 @@
       `;
       document.getElementById('mg-back-edit').addEventListener('click', ()=>{ studentStep='quiz'; renderStudent(); });
       document.getElementById('mg-final-submit').addEventListener('click', async ()=>{
-        const name = window.__mgPendingName;
         const answers = ws.questions.map(q=>({
           no:q.no, chosen:(studentAnswers[q.no]||[]).slice(), answers:q.answers.slice()
         }));
         const correctCount = answers.filter(a=>sameSet(a.chosen,a.answers)).length;
-        const result = { name, timestamp:Date.now(), answers, total:answers.length, correctCount };
+        const result = { name:pendingName, grade:pendingGrade, classroom:pendingClassroom, timestamp:Date.now(), answers, total:answers.length, correctCount };
         const ok = await submitResult(pickedTeacherId, ws.id, result);
         if(ok){
           window.__mgTmpName = '';
@@ -298,7 +310,7 @@
       }).join('');
       root.innerHTML = `
         <div class="mg-card mg-result-screen">
-          <div style="font-size:13px;color:var(--sub);font-weight:700;">${r.name} 학생 채점 결과</div>
+          <div style="font-size:13px;color:var(--sub);font-weight:700;">${r.grade} ${r.classroom}반 ${r.name} 학생 채점 결과</div>
           <div class="mg-result-score">${r.correctCount} / ${r.total}</div>
           <div class="mg-result-sub">정답률 ${Math.round(r.correctCount/r.total*100)}%</div>
           <div class="mg-stamp-grid">${stamps}</div>
@@ -329,6 +341,14 @@
       <div class="mg-card">
         <h3>${ws.title}</h3>
         <div class="mg-field">
+          <label>학년</label>
+          <div class="mg-choice-select">${GRADES.map(g=>`<button class="mg-pick-btn ${selectedGrade===g?'selected':''}" data-grade="${g}">${g}</button>`).join('')}</div>
+        </div>
+        <div class="mg-field">
+          <label>반</label>
+          <div class="mg-choice-select">${CLASSROOMS.map(c=>`<button class="mg-pick-btn ${selectedClassroom===c?'selected':''}" data-classroom="${c}">${c}</button>`).join('')}</div>
+        </div>
+        <div class="mg-field">
           <label>이름</label>
           <input type="text" id="mg-name" placeholder="이름을 입력하세요" value="${(window.__mgTmpName||'')}">
         </div>
@@ -339,6 +359,20 @@
       <button class="mg-btn secondary" id="mg-back2" style="margin-top:8px;">다른 학습지 선택</button>
     `;
 
+    root.querySelectorAll('[data-grade]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        window.__mgTmpName = document.getElementById('mg-name').value;
+        selectedGrade = btn.dataset.grade;
+        renderStudent();
+      });
+    });
+    root.querySelectorAll('[data-classroom]').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        window.__mgTmpName = document.getElementById('mg-name').value;
+        selectedClassroom = btn.dataset.classroom;
+        renderStudent();
+      });
+    });
     root.querySelectorAll('.mg-choice-btn').forEach(btn=>{
       btn.addEventListener('click', ()=>{
         window.__mgTmpName = document.getElementById('mg-name').value;
@@ -365,15 +399,19 @@
 
     document.getElementById('mg-submit').addEventListener('click', async ()=>{
       const name = (document.getElementById('mg-name').value || '').trim();
+      if(!selectedGrade){ toast('학년을 선택해주세요'); return; }
+      if(!selectedClassroom){ toast('반을 선택해주세요'); return; }
       if(!name){ toast('이름을 입력해주세요'); return; }
       const answered = ws.questions.every(q => (studentAnswers[q.no]||[]).length===q.answers.length);
       if(!answered){ toast('모든 문제에 답을 다 선택해주세요'); return; }
 
       const existing = await loadResults(pickedTeacherId, ws.id);
-      const dup = existing.some(r=>r.data.name.trim()===name);
-      if(dup){ toast('이미 제출한 이름이에요. 다시 하려면 선생님께 요청하세요'); return; }
+      const dup = existing.some(r=>r.data.name.trim()===name && r.data.grade===selectedGrade && r.data.classroom===selectedClassroom);
+      if(dup){ toast('이미 같은 학년·반·이름으로 제출했어요. 다시 하려면 선생님께 요청하세요'); return; }
 
-      window.__mgPendingName = name;
+      pendingName = name;
+      pendingGrade = selectedGrade;
+      pendingClassroom = selectedClassroom;
       window.__mgTmpName = name;
       studentStep='confirm';
       renderStudent();
@@ -418,8 +456,7 @@
         currentTeacher = {id, name:t.name};
       }else{
         const id = genId('t_');
-        teachersMap[id] = {name, pin:loginPin};
-        const ok = await saveTeachers();
+        const ok = await createTeacher(id, name, loginPin);
         if(!ok){ toast('계정 생성에 실패했어요'); return; }
         currentTeacher = {id, name};
         toast('새 계정이 만들어졌어요');
@@ -545,11 +582,12 @@
     });
     document.getElementById('mg-t-save').addEventListener('click', async ()=>{
       if(!draftKey.title.trim()){ toast('학습지 제목을 입력해주세요'); return; }
-      const idx = teacherWorksheets.findIndex(w=>w.id===draftKey.id);
-      if(idx>=0) teacherWorksheets[idx] = draftKey; else teacherWorksheets.push(draftKey);
-      const ok = await saveWorksheetsArr(currentTeacher.id, teacherWorksheets);
-      if(ok){ toast('저장되었습니다'); teacherTab='list'; renderTeacher(); }
-      else{ toast('저장에 실패했어요'); }
+      const ok = await saveOneWorksheet(currentTeacher.id, draftKey);
+      if(ok){
+        const idx = teacherWorksheets.findIndex(w=>w.id===draftKey.id);
+        if(idx>=0) teacherWorksheets[idx] = draftKey; else teacherWorksheets.push(draftKey);
+        toast('저장되었습니다'); teacherTab='list'; renderTeacher();
+      }else{ toast('저장에 실패했어요'); }
     });
     document.getElementById('mg-t-cancel').addEventListener('click', ()=>{ teacherTab='list'; renderTeacher(); });
   }
@@ -591,9 +629,10 @@
       const pctClass = pct>=80?'mg-pct-high':(pct>=50?'mg-pct-mid':'mg-pct-low');
       const dt = new Date(d.timestamp);
       const timeStr = dt.getMonth()+1+'/'+dt.getDate()+' '+String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0');
+      const cls = (d.grade||'')+' '+(d.classroom?d.classroom+'반':'');
       return `<div class="mg-stat-row">
         <div>
-          <div class="mg-stat-name">${d.name}</div>
+          <div class="mg-stat-name">${d.name} <span style="font-weight:400;color:var(--sub);font-size:12px;">${cls}</span></div>
           <div class="mg-stat-score">${d.correctCount}/${d.total}문항 · ${timeStr}</div>
         </div>
         <button class="mg-btn small secondary" data-indiv="${i}">엑셀</button>
@@ -635,15 +674,20 @@
       btn.addEventListener('click', ()=>{
         const r = results[parseInt(btn.dataset.indiv,10)].data;
         const rows = r.answers.map(a=>({ 문항번호:a.no, 학생답:a.chosen.join(','), 정답:a.answers.join(','), 정답여부: sameSet(a.chosen,a.answers)?'O':'X' }));
-        xlsxDownload([{name:r.name, rows}], ws.title+'_'+r.name+'_결과.xlsx');
+        xlsxDownload([{name:r.name, rows}], ws.title+'_'+(r.grade||'')+(r.classroom||'')+'_'+r.name+'_결과.xlsx');
       });
     });
     document.getElementById('mg-export-all').addEventListener('click', ()=>{
       const studentSheet = results.map(r=>({
-        이름:r.data.name, 점수:r.data.correctCount+'/'+r.data.total,
+        학년:r.data.grade||'', 반:r.data.classroom||'', 이름:r.data.name,
+        점수:r.data.correctCount+'/'+r.data.total,
         정답률:Math.round(r.data.correctCount/r.data.total*100)+'%',
         제출시간:new Date(r.data.timestamp).toLocaleString('ko-KR')
-      }));
+      })).sort((a,b)=>{
+        if(a.학년!==b.학년) return a.학년.localeCompare(b.학년);
+        if(a.반!==b.반) return a.반.localeCompare(b.반);
+        return a.이름.localeCompare(b.이름);
+      });
       const itemSheet = itemNos.map(no=>{
         const it = itemMap[no];
         return { 문항번호:no, 정답:it.answers.join(','), 정답자수:it.correct, 전체인원:it.total, 정답률:Math.round(it.correct/it.total*100)+'%' };
@@ -682,10 +726,12 @@
     if(e.target.matches('[data-del]')){
       const id = e.target.dataset.del;
       if(e.target.dataset.armed==='1'){
-        teacherWorksheets = teacherWorksheets.filter(w=>w.id!==id);
-        await saveWorksheetsArr(currentTeacher.id, teacherWorksheets);
-        toast('삭제되었습니다');
-        renderTeacher();
+        const ok = await deleteOneWorksheet(id);
+        if(ok){
+          teacherWorksheets = teacherWorksheets.filter(w=>w.id!==id);
+          toast('삭제되었습니다');
+          renderTeacher();
+        }else{ toast('삭제에 실패했어요'); }
       }else{
         e.target.dataset.armed='1'; e.target.textContent='정말 삭제?';
         setTimeout(()=>{ e.target.dataset.armed='0'; e.target.textContent='삭제'; }, 2500);
