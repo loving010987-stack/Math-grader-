@@ -96,7 +96,6 @@
   const root = document.getElementById('mg-content');
   const toastEl = document.getElementById('mg-toast');
   const badgeEl = document.getElementById('mg-teacher-badge');
-  const GRADES = ['3학년','4학년','5학년','6학년'];
   const CLASSROOMS = ['국화','난초','매화','전담'];
 
   let mode = 'student'; // student | pin | teacher
@@ -177,21 +176,11 @@
         if(!q.answers) q.answers=[];
         if(typeof q.multi!=='boolean') q.multi = q.answers.length>1;
       });
-      // 학년 정보는 제목 안에 "학년|실제제목" 형태로 저장/추출 (백엔드 변경 없이 동작)
-      const rawTitle = ws.title || '';
-      const sep = rawTitle.indexOf('|');
-      if(sep>0 && GRADES.includes(rawTitle.slice(0,sep))){
-        ws.grade = rawTitle.slice(0,sep);
-        ws.title = rawTitle.slice(sep+1);
-      }else{
-        ws.grade = GRADES[0];
-      }
     });
     return arr;
   }
   async function saveOneWorksheet(worksheet){
-    const payload = { ...worksheet, title: (worksheet.grade||GRADES[0]) + '|' + worksheet.title };
-    const res = await apiPost({ action:'saveWorksheet', teacherId:TID, worksheet: payload });
+    const res = await apiPost({ action:'saveWorksheet', teacherId:TID, worksheet });
     return !!(res && res.ok);
   }
   async function deleteOneWorksheet(worksheetId){
@@ -204,7 +193,7 @@
   }
   async function loadResults(worksheetId){
     const res = await apiGet({ action:'results', teacherId:TID, worksheetId });
-    const out = (res || []).map(r=>({ key:r.key, data:{ name:String(r.name==null?'':r.name), grade:String(r.grade==null?'':r.grade), classroom:String(r.classroom==null?'':r.classroom), timestamp:r.timestamp, answers:r.answers, total:r.total, correctCount:r.correctCount } }));
+    const out = (res || []).map(r=>({ key:r.key, data:{ name:String(r.name==null?'':r.name), classroom:String(r.classroom==null?'':r.classroom), timestamp:r.timestamp, answers:r.answers, total:r.total, correctCount:r.correctCount } }));
     out.sort((a,b)=>(b.data.timestamp||0)-(a.data.timestamp||0));
     return out;
   }
@@ -272,7 +261,7 @@
         <div class="mg-card">
           <h3>제출 전 마지막 확인</h3>
           <div class="mg-warn">제출하면 바로 채점되고 다시 제출할 수 없어요. 고른 답이 맞는지 꼭 확인하세요!</div>
-          <div class="mg-stat-row"><div class="mg-stat-name">${ws.grade} ${pendingClassroom}반</div><div class="mg-stat-score">${pendingName}</div></div>
+          <div class="mg-stat-row"><div class="mg-stat-name">${pendingClassroom}반</div><div class="mg-stat-score">${pendingName}</div></div>
           <div>${rows}</div>
         </div>
         <button class="mg-btn" id="mg-final-submit">최종 제출하기</button>
@@ -284,7 +273,7 @@
           no:q.no, chosen:(studentAnswers[q.no]||[]).slice(), answers:q.answers.slice()
         }));
         const correctCount = answers.filter(a=>sameSet(a.chosen,a.answers)).length;
-        const result = { name:pendingName, grade:ws.grade, classroom:pendingClassroom, timestamp:Date.now(), answers, total:answers.length, correctCount };
+        const result = { name:pendingName, classroom:pendingClassroom, timestamp:Date.now(), answers, total:answers.length, correctCount };
         const ok = await submitResult(ws.id, result);
         if(ok){
           window.__mgTmpName = '';
@@ -304,7 +293,7 @@
       }).join('');
       root.innerHTML = `
         <div class="mg-card mg-result-screen">
-          <div style="font-size:13px;color:var(--sub);font-weight:700;">${r.grade} ${r.classroom}반 ${r.name} 학생 채점 결과</div>
+          <div style="font-size:13px;color:var(--sub);font-weight:700;">${r.classroom}반 ${r.name} 학생 채점 결과</div>
           <div class="mg-result-score">${r.correctCount} / ${r.total}</div>
           <div class="mg-result-sub">정답률 ${Math.round(r.correctCount/r.total*100)}%</div>
           <div class="mg-stamp-grid">${stamps}</div>
@@ -333,7 +322,7 @@
 
     root.innerHTML = `
       <div class="mg-card">
-        <h3>${ws.title} <span style="font-weight:400;color:var(--sub);font-size:13px;">(${ws.grade})</span></h3>
+        <h3>${ws.title}</h3>
         <div class="mg-field">
           <label>반</label>
           <div class="mg-choice-select">${CLASSROOMS.map(c=>`<button class="mg-pick-btn ${selectedClassroom===c?'selected':''}" data-classroom="${c}">${c}</button>`).join('')}</div>
@@ -487,9 +476,8 @@
     if(existing){
       draftKey = JSON.parse(JSON.stringify(existing));
       draftKey.questions.forEach(q=>{ if(typeof q.multi!=='boolean') q.multi = q.answers.length>1; });
-      if(!draftKey.grade) draftKey.grade = GRADES[0];
     }else{
-      draftKey = { id: genId('ws_'), title:'', grade: GRADES[0], choiceCount:4, questions: Array.from({length:10},(_,i)=>({no:i+1, answers:[1], multi:false})) };
+      draftKey = { id: genId('ws_'), title:'', choiceCount:4, questions: Array.from({length:10},(_,i)=>({no:i+1, answers:[1], multi:false})) };
     }
   }
 
@@ -498,16 +486,12 @@
     if(teacherWorksheets.length===0){
       body.innerHTML = '<div class="mg-card"><div class="mg-empty">아직 만든 학습지가 없어요.</div></div>';
     }else{
-      const grouped = GRADES.map(g=>({ grade:g, list: teacherWorksheets.filter(w=>w.grade===g) })).filter(g=>g.list.length>0);
-      const html = grouped.map(g=>{
-        const items = g.list.map(ws=>`
-          <div class="mg-list-btn" style="cursor:default;">
-            <span style="cursor:pointer;flex:1;" data-edit="${ws.id}">${ws.title} <span class="arrow">(${ws.questions.length}문항)</span></span>
-            <button class="mg-btn small danger" data-del="${ws.id}" style="margin-left:8px;">삭제</button>
-          </div>
-        `).join('');
-        return `<h4>${g.grade}</h4>${items}`;
-      }).join('');
+      const html = teacherWorksheets.map(ws=>`
+        <div class="mg-list-btn" style="cursor:default;">
+          <span style="cursor:pointer;flex:1;" data-edit="${ws.id}">${ws.title} <span class="arrow">(${ws.questions.length}문항)</span></span>
+          <button class="mg-btn small danger" data-del="${ws.id}" style="margin-left:8px;">삭제</button>
+        </div>
+      `).join('');
       body.innerHTML = `<div class="mg-card"><h3>내 학습지 목록</h3>${html}</div>`;
     }
     body.innerHTML += '<button class="mg-btn" id="mg-new-ws">+ 새 학습지 만들기</button>';
@@ -541,10 +525,6 @@
       <div class="mg-card">
         <h3>학습지 정보</h3>
         <div class="mg-field">
-          <label>학년</label>
-          <div class="mg-choice-select">${GRADES.map(g=>`<button class="mg-pick-btn ${draftKey.grade===g?'selected':''}" data-grade="${g}">${g}</button>`).join('')}</div>
-        </div>
-        <div class="mg-field">
           <label>학습지 제목</label>
           <input type="text" id="mg-t-title" placeholder="예: 분수 학습지" value="${draftKey.title || ''}">
         </div>
@@ -561,9 +541,6 @@
       <button class="mg-btn" id="mg-t-save">저장</button>
       <button class="mg-btn secondary" id="mg-t-cancel" style="margin-top:8px;">취소하고 목록으로</button>
     `;
-    body.querySelectorAll('[data-grade]').forEach(btn=>{
-      btn.addEventListener('click', ()=>{ draftKey.grade = btn.dataset.grade; renderTeacherEdit(); });
-    });
     document.getElementById('mg-t-title').addEventListener('input', e=>{ draftKey.title = e.target.value; });
     document.getElementById('mg-t-qcount').addEventListener('change', e=>{
       let n = Math.max(1, Math.min(40, parseInt(e.target.value,10)||1));
@@ -672,7 +649,7 @@
       const pctClass = pct>=80?'mg-pct-high':(pct>=50?'mg-pct-mid':'mg-pct-low');
       const dt = new Date(d.timestamp);
       const timeStr = dt.getMonth()+1+'/'+dt.getDate()+' '+String(dt.getHours()).padStart(2,'0')+':'+String(dt.getMinutes()).padStart(2,'0');
-      const cls = (d.grade||'')+' '+(d.classroom?d.classroom+'반':'');
+      const cls = (d.classroom?d.classroom+'반':'');
       return `<div class="mg-stat-row">
         <div>
           <div class="mg-stat-name">${d.name} <span style="font-weight:400;color:var(--sub);font-size:12px;">${cls}</span></div>
@@ -717,17 +694,16 @@
       btn.addEventListener('click', ()=>{
         const r = results[parseInt(btn.dataset.indiv,10)].data;
         const rows = r.answers.map(a=>({ 문항번호:a.no, 학생답:a.chosen.join(','), 정답:a.answers.join(','), 정답여부: sameSet(a.chosen,a.answers)?'O':'X' }));
-        xlsxDownload([{name:r.name, rows}], ws.title+'_'+(r.grade||'')+(r.classroom||'')+'_'+r.name+'_결과.xlsx');
+        xlsxDownload([{name:r.name, rows}], ws.title+'_'+(r.classroom||'')+'_'+r.name+'_결과.xlsx');
       });
     });
     document.getElementById('mg-export-all').addEventListener('click', ()=>{
       const studentSheet = results.map(r=>({
-        학년:r.data.grade||'', 반:r.data.classroom||'', 이름:r.data.name,
+        반:r.data.classroom||'', 이름:r.data.name,
         점수:r.data.correctCount+'/'+r.data.total,
         정답률:Math.round(r.data.correctCount/r.data.total*100)+'%',
         제출시간:new Date(r.data.timestamp).toLocaleString('ko-KR')
       })).sort((a,b)=>{
-        if(a.학년!==b.학년) return a.학년.localeCompare(b.학년);
         if(a.반!==b.반) return a.반.localeCompare(b.반);
         return a.이름.localeCompare(b.이름);
       });
