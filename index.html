@@ -146,13 +146,13 @@
       const qs = new URLSearchParams(params).toString();
       const res = await fetch(API_URL + '?' + qs);
       return await res.json();
-    }catch(e){ console.error(e); return null; }
+    }catch(e){ console.error(e); toast('서버 연결 오류(GET): ' + e.message); return null; }
   }
   async function apiPost(body){
     try{
       const res = await fetch(API_URL, { method:'POST', body: JSON.stringify(body) });
       return await res.json();
-    }catch(e){ console.error(e); return null; }
+    }catch(e){ console.error(e); toast('서버 연결 오류(POST): ' + e.message); return null; }
   }
 
   async function loadSoloTeacherPin(){
@@ -379,21 +379,26 @@
     document.getElementById('mg-back2').addEventListener('click', ()=>{ studentStep='pick-worksheet'; renderStudent(); });
 
     document.getElementById('mg-submit').addEventListener('click', async ()=>{
-      const name = (document.getElementById('mg-name').value || '').trim();
-      if(!selectedClassroom){ toast('반을 선택해주세요'); return; }
-      if(!name){ toast('이름을 입력해주세요'); return; }
-      const answered = ws.questions.every(q => (studentAnswers[q.no]||[]).length===q.answers.length);
-      if(!answered){ toast('모든 문제에 답을 다 선택해주세요'); return; }
+      try{
+        const name = (document.getElementById('mg-name').value || '').trim();
+        if(!selectedClassroom){ toast('반을 선택해주세요'); return; }
+        if(!name){ toast('이름을 입력해주세요'); return; }
+        const answered = ws.questions.every(q => (studentAnswers[q.no]||[]).length===q.answers.length);
+        if(!answered){ toast('모든 문제에 답을 다 선택해주세요'); return; }
 
-      const existing = await loadResults(ws.id);
-      const dup = existing.some(r=>r.data.name.trim()===name && r.data.classroom===selectedClassroom);
-      if(dup){ toast('이미 같은 반·이름으로 제출했어요. 다시 하려면 선생님께 요청하세요'); return; }
+        toast('확인 중...');
+        const existing = await loadResults(ws.id);
+        const dup = existing.some(r=>r.data.name.trim()===name && r.data.classroom===selectedClassroom);
+        if(dup){ toast('이미 같은 반·이름으로 제출했어요. 다시 하려면 선생님께 요청하세요'); return; }
 
-      pendingName = name;
-      pendingClassroom = selectedClassroom;
-      window.__mgTmpName = name;
-      studentStep='confirm';
-      renderStudent();
+        pendingName = name;
+        pendingClassroom = selectedClassroom;
+        window.__mgTmpName = name;
+        studentStep='confirm';
+        renderStudent();
+      }catch(err){
+        toast('오류 발생: ' + (err && err.message ? err.message : String(err)));
+      }
     });
   }
 
